@@ -1,4 +1,4 @@
-use crate::{Finding, Report};
+use crate::{Finding, Report, ScanTimes};
 use anyhow::Result;
 use rustix::fs::{CWD, RenameFlags, renameat_with};
 use serde::Serialize;
@@ -11,9 +11,10 @@ use std::{
 };
 
 #[derive(Serialize)]
-struct Metrics {
+struct Metrics<'a> {
     wall_seconds: f64,
-    model_load_seconds: f64,
+    #[serde(flatten)]
+    stages: &'a ScanTimes,
     peak_rss_kib: Option<u64>,
     runner_memory_kib: Option<u64>,
     cpu_count: usize,
@@ -65,7 +66,7 @@ fn write_html(
     mut out: impl Write,
     report: &Report,
     groups: &[(usize, Vec<&Finding>)],
-    metrics: &Metrics,
+    metrics: &Metrics<'_>,
     rss: &str,
     skipped: usize,
 ) -> std::io::Result<()> {
@@ -134,10 +135,15 @@ fn write_html(
     out.flush()
 }
 
-pub fn write_bundle(directory: &Path, report: &Report, seconds: f64, load: f64) -> Result<()> {
+pub(super) fn write_bundle(
+    directory: &Path,
+    report: &Report,
+    seconds: f64,
+    stages: &ScanTimes,
+) -> Result<()> {
     let metrics = Metrics {
         wall_seconds: seconds,
-        model_load_seconds: load,
+        stages,
         peak_rss_kib: proc_kib("/proc/self/status", "VmHWM:"),
         runner_memory_kib: proc_kib("/proc/meminfo", "MemTotal:"),
         cpu_count: std::thread::available_parallelism().map_or(1, |n| n.get()),
@@ -162,7 +168,8 @@ pub fn write_bundle(directory: &Path, report: &Report, seconds: f64, load: f64) 
         | Files scanned | Lines scanned | Scan time | Peak RSS |\n\
         | ---: | ---: | ---: | ---: |\n\
         | {} | {} | {seconds:.2} s | {rss} |\n\n\
-        Skipped files: {skipped}. Unlocalized candidates: {}. Coverage mismatches: {}.\n",
+        Skipped files: {skipped}. Unlocalized candidates: {}. Coverage mismatches: {}.\n\n\
+        TruffleHog {:.2} s · GLiNER load {:.2} s · GLiNER scan {:.2} s.\n",
         if report.status == "complete" {
             "Complete"
         } else {
@@ -174,6 +181,9 @@ pub fn write_bundle(directory: &Path, report: &Report, seconds: f64, load: f64) 
         report.scanned_lines,
         report.unlocalized_native_candidates,
         report.native_coverage_mismatch_batches,
+        stages.trufflehog_seconds,
+        stages.model_load_seconds,
+        stages.gliner_seconds,
     );
     let staging = tempfile::Builder::new()
         .permissions(fs::Permissions::from_mode(0o700))

@@ -24,13 +24,12 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Install and run Hushgrep
-      id: scan
+    - name: Download and install Hushgrep
+      id: install
       shell: bash
       env:
-        CHECKOUT: ${{ inputs.path }}
-        RELEASE: v0.1.0-alpha.4
-        ARCHIVE_SHA256: bed2793216e6d74e03213bec04bf50e79579983468689fa787d1680be1fd8f9a
+        RELEASE: v0.1.0-alpha.5
+        ARCHIVE_SHA256: 7bd906e66e6b18994a1973ea30cdf8eab1a9df46627a9b821724cba266c363b2
       run: |
         umask 077
         if [[ "$(uname -sm)" != "Linux x86_64" ]]; then
@@ -39,23 +38,38 @@ runs:
         fi
         work="$(mktemp -d "$RUNNER_TEMP/hushgrep.XXXXXXXX")"
         archive="$work/hushgrep-linux-x86_64.tar.gz"
+        echo "Downloading Hushgrep $RELEASE"
         curl --silent --show-error --fail --location --retry 2 --connect-timeout 15 --max-time 300 \
           -o "$archive" "https://github.com/beshkenadze/hushgrep/releases/download/$RELEASE/hushgrep-linux-x86_64.tar.gz"
+        echo "Checking release SHA-256"
         printf '%s  %s\n' "$ARCHIVE_SHA256" "$archive" | sha256sum --strict --check --status
+        echo "Extracting the verified bundle"
         tar -xzf "$archive" -C "$work"
         rm -- "$archive"
+        printf 'work=%s\n' "$work" >> "$GITHUB_OUTPUT"
+    - name: Scan checkout
+      id: scan
+      shell: bash
+      env:
+        CHECKOUT: ${{ inputs.path }}
+        WORK: ${{ steps.install.outputs.work }}
+      run: |
+        umask 077
         repo="$CHECKOUT"
         if [[ "$repo" != /* ]]; then
           repo="$GITHUB_WORKSPACE/$repo"
         fi
+        # Forward only fixed phase names and numeric counters from scanner stderr.
+        progress='^Hushgrep progress: (inventory [0-9]+ paths|TruffleHog batch [0-9]+: [0-9]+ files|loading GLiNER|GLiNER batch [0-9]+: [0-9]+/[0-9]+ windows|processed [0-9]+/[0-9]+ paths|writing report)$'
         code=0
-        findings="$("$work/hushgrep-linux-x86_64/hushgrep" --report-dir "$work/report" "$repo" 2>/dev/null)" || code=$?
+        findings="$("$WORK/hushgrep-linux-x86_64/hushgrep" --progress --report-dir "$WORK/report" "$repo" \
+          2> >(LC_ALL=C grep --line-buffered -E "$progress" >&2))" || code=$?
         if [[ "$code" != 0 && "$code" != 2 ]]; then
           echo "::error::Hushgrep could not scan the checkout. Check the Git root and runner compatibility."
           exit 1
         fi
-        cat "$work/report/summary.md" >> "$GITHUB_STEP_SUMMARY"
-        printf 'findings=%s\ndirectory=%s\nscan-code=%s\n' "$findings" "$work/report" "$code" >> "$GITHUB_OUTPUT"
+        cat "$WORK/report/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        printf 'findings=%s\ndirectory=%s\nscan-code=%s\n' "$findings" "$WORK/report" "$code" >> "$GITHUB_OUTPUT"
     - name: Upload masked reports
       id: upload
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

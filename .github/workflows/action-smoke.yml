@@ -20,7 +20,7 @@ jobs:
           printf '// sample\r\n// тест · uri = "https://fixture:%%4D%%61%%73%%6B%%54%%65%%73%%74%%46%%69%%78%%74%%75%%72%%65%%38%%50@example.invalid/"\r\n' > "$root/MaskTestFixture8P.txt"
           token="$(printf 'fixture:MaskTestFixture9K' | base64 -w0)"
           printf '// sample\r\n// тест · header = "Basic %s"\r\n' "$token" > "$root/MaskTestFixture9K.txt"
-      - uses: beshkenadze/hushgrep@v0.1.0-alpha.4
+      - uses: beshkenadze/hushgrep@v0.1.0-alpha.5
         id: scan
         with:
           path: ${{ runner.temp }}/canary-repo
@@ -32,7 +32,7 @@ jobs:
           FINDINGS: ${{ steps.scan.outputs.findings }}
         run: |
           jq -e --argjson findings "$FINDINGS" '
-            .version == "0.1.0-alpha.4" and
+            .version == "0.1.0-alpha.5" and
             .status == "complete" and .scanned_files == 3 and .finding_count == $findings and
             all(.findings[]; .path == "[REDACTED PATH]" and .value == "[REDACTED]") and
             ([.findings[] | select(.line == 2 and .end_line == 2) | .file_id] | unique) == [0,1,2] and
@@ -46,4 +46,5 @@ jobs:
             fi
           done
           grep -Fq '[REDACTED]' "$REPORT_DIR/report.html"
-          jq -e '.peak_rss_kib > 0 and .wall_seconds > 0' "$REPORT_DIR/metrics.json"
+          jq -e '.peak_rss_kib > 0 and .wall_seconds > 0 and
+            .model_load_seconds > 0 and .gliner_seconds > 0 and .trufflehog_seconds > 0' "$REPORT_DIR/metrics.json"

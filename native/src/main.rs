@@ -6,7 +6,7 @@ use std::{
     fs::File,
     io,
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 macro_rules! re {
@@ -46,8 +46,23 @@ struct Report {
     finding_count: usize,
     findings: Vec<Finding>,
 }
-fn scan(root: &Path, base: &Path) -> Result<(Report, f64)> {
+#[derive(Default, Serialize)]
+struct ScanTimes {
+    model_load_seconds: f64,
+    trufflehog_seconds: f64,
+    gliner_seconds: f64,
+}
+
+fn log_progress(enabled: bool, message: std::fmt::Arguments<'_>) {
+    if enabled {
+        eprintln!("Hushgrep progress: {message}");
+    }
+}
+
+fn scan(root: &Path, base: &Path, progress: bool) -> Result<(Report, ScanTimes)> {
     let names = source::names(root)?;
+    let total_paths = names.len();
+    log_progress(progress, format_args!("inventory {total_paths} paths"));
     let dir = File::open(root)?;
     let mut report = Report {
         version: env!("CARGO_PKG_VERSION"),
@@ -62,7 +77,8 @@ fn scan(root: &Path, base: &Path) -> Result<(Report, f64)> {
     };
     let mut sensitive = BTreeSet::<String>::new();
     let mut model = None;
-    let mut load = 0.;
+    let mut times = ScanTimes::default();
+    let mut batch = 0;
     let mut iter = names.into_iter().peekable();
     while iter.peek().is_some() {
         let mut files = Vec::<Source>::new();
@@ -81,17 +97,45 @@ fn scan(root: &Path, base: &Path) -> Result<(Report, f64)> {
             }
         }
         if files.is_empty() {
-            continue;
+            log_progress(
+                progress,
+                format_args!("processed {total_paths}/{total_paths} paths"),
+            );
+            break;
         }
+        batch += 1;
+        log_progress(
+            progress,
+            format_args!("TruffleHog batch {batch}: {} files", files.len()),
+        );
+        let start = Instant::now();
         let (native, unresolved, mismatch) = truffle::scan(&base.join("bin/trufflehog"), &files)?;
+        times.trufflehog_seconds += start.elapsed().as_secs_f64();
         report.unlocalized_native_candidates += unresolved;
         report.native_coverage_mismatch_batches += usize::from(mismatch);
         if model.is_none() {
+            log_progress(progress, format_args!("loading GLiNER"));
             let start = Instant::now();
             model = Some(model::Model::load(base)?);
-            load = start.elapsed().as_secs_f64();
+            times.model_load_seconds = start.elapsed().as_secs_f64();
         }
-        let neural = model.as_mut().unwrap().scan(&files)?;
+        let windows: usize = files.iter().map(|src| src.lines.len() - 1).sum();
+        log_progress(
+            progress,
+            format_args!("GLiNER batch {batch}: 0/{windows} windows"),
+        );
+        let start = Instant::now();
+        let mut last_progress = start;
+        let neural = model.as_mut().unwrap().scan(&files, |done| {
+            if progress && (done == windows || last_progress.elapsed() >= Duration::from_secs(15)) {
+                log_progress(
+                    progress,
+                    format_args!("GLiNER batch {batch}: {done}/{windows} windows"),
+                );
+                last_progress = Instant::now();
+            }
+        })?;
+        times.gliner_seconds += start.elapsed().as_secs_f64();
         for (i, ((src, mut th), gliner)) in files.iter().zip(native).zip(neural).enumerate() {
             th.extend(gliner);
             let parsed = rules::Parsed::new(&src.text);
@@ -127,6 +171,10 @@ fn scan(root: &Path, base: &Path) -> Result<(Report, f64)> {
             }
         }
         report.scanned_files += files.len();
+        log_progress(
+            progress,
+            format_args!("processed {}/{total_paths} paths", total_paths - iter.len()),
+        );
     }
     let mut redact = BTreeMap::new();
     for f in &report.findings {
@@ -145,7 +193,8 @@ fn scan(root: &Path, base: &Path) -> Result<(Report, f64)> {
     if report.unlocalized_native_candidates + report.native_coverage_mismatch_batches > 0 {
         report.status = "partial";
     }
-    Ok((report, load))
+    log_progress(progress, format_args!("writing report"));
+    Ok((report, times))
 }
 fn run() -> Result<i32> {
     let started = Instant::now();
@@ -153,6 +202,7 @@ fn run() -> Result<i32> {
     let mut output = None;
     let mut report_dir = None;
     let mut timings = false;
+    let mut progress = false;
     let mut args = env::args_os().skip(1);
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -162,7 +212,7 @@ fn run() -> Result<i32> {
             }
             Some("--help" | "-h") => {
                 println!(
-                    "hushgrep [--output NEW_REPORT.json | --report-dir NEW_DIRECTORY] [--timings] REPOSITORY\nScan a local Git working tree on CPU. By default masked JSON goes to stdout.\n--report-dir writes JSON, HTML, measurements and a Markdown summary to a new directory, and prints the finding count."
+                    "hushgrep [--output NEW_REPORT.json | --report-dir NEW_DIRECTORY] [--timings] [--progress] REPOSITORY\nScan a local Git working tree on CPU. By default masked JSON goes to stdout.\n--report-dir writes JSON, HTML, measurements and a Markdown summary to a new directory, and prints the finding count.\n--progress writes phase names and counts to stderr."
                 );
                 return Ok(0);
             }
@@ -173,6 +223,7 @@ fn run() -> Result<i32> {
                 report_dir = Some(PathBuf::from(args.next().context("report directory")?));
             }
             Some("--timings") => timings = true,
+            Some("--progress") => progress = true,
             _ => {
                 ensure!(
                     root.is_none() && !arg.to_string_lossy().starts_with('-'),
@@ -192,9 +243,9 @@ fn run() -> Result<i32> {
     }
     let exe = env::current_exe()?;
     let base = exe.parent().context("bundle directory")?;
-    let (report, load) = scan(&root, base)?;
+    let (report, times) = scan(&root, base, progress)?;
     if let Some(p) = report_dir {
-        report::write_bundle(&p, &report, started.elapsed().as_secs_f64(), load)?;
+        report::write_bundle(&p, &report, started.elapsed().as_secs_f64(), &times)?;
         println!("{}", report.finding_count);
     } else if let Some(p) = output {
         let mut tmp = tempfile::NamedTempFile::new_in(report::parent(&p))?;
@@ -206,7 +257,12 @@ fn run() -> Result<i32> {
     if timings {
         eprintln!(
             "{}",
-            serde_json::json!({"total_seconds":started.elapsed().as_secs_f64(),"model_load_seconds":load})
+            serde_json::json!({
+                "total_seconds": started.elapsed().as_secs_f64(),
+                "model_load_seconds": times.model_load_seconds,
+                "trufflehog_seconds": times.trufflehog_seconds,
+                "gliner_seconds": times.gliner_seconds,
+            })
         );
     }
     Ok(if report.status == "complete" { 0 } else { 2 })

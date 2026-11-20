@@ -201,25 +201,33 @@ impl Model {
         }
         Ok(output)
     }
-    pub fn scan(&mut self, files: &[Source]) -> Result<Vec<BTreeSet<Span>>> {
+    pub fn scan(
+        &mut self,
+        files: &[Source],
+        mut on_progress: impl FnMut(usize),
+    ) -> Result<Vec<BTreeSet<Span>>> {
         let mut found = vec![BTreeSet::new(); files.len()];
         let mut locations: HashMap<&str, Vec<(usize, usize, usize, usize)>> = HashMap::new();
         let mut count = 0;
+        let mut completed = 0;
         let mut flush =
             |locations: &mut HashMap<&str, Vec<(usize, usize, usize, usize)>>| -> Result<()> {
                 let mut keys: Vec<_> = locations.keys().copied().collect();
                 keys.sort_by_cached_key(|s| (s.chars().count(), *s));
                 for batch in keys.chunks(8) {
                     for (window, pred) in batch.iter().zip(self.predict(batch)?) {
+                        let occurrences = &locations[*window];
                         for (a, end) in pred {
                             let end = end.min(window.len());
-                            for &(i, lo, left, right) in &locations[*window] {
+                            for &(i, lo, left, right) in occurrences {
                                 if a < end && (left..right).contains(&(lo + a)) {
                                     found[i].insert((lo + a, lo + end));
                                 }
                             }
                         }
+                        completed += occurrences.len();
                     }
+                    on_progress(completed);
                 }
                 locations.clear();
                 Ok(())
