@@ -12,13 +12,38 @@ jobs:
         with:
           persist-credentials: false
       - name: Create synthetic test fixtures
-        run: python3 -I .github/tests/smoke.py prepare
-      - uses: beshkenadze/hushgrep@v0.1.0-alpha.3
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/canary-repo"
+          git init -q "$root"
+          printf '// sample\r\n// тест · uri = "https://fixture:MaskTestFixture7Q@example.invalid/"\r\n' > "$root/MaskTestFixture7Q.txt"
+          printf '// sample\r\n// тест · uri = "https://fixture:%%4D%%61%%73%%6B%%54%%65%%73%%74%%46%%69%%78%%74%%75%%72%%65%%38%%50@example.invalid/"\r\n' > "$root/MaskTestFixture8P.txt"
+          token="$(printf 'fixture:MaskTestFixture9K' | base64 -w0)"
+          printf '// sample\r\n// тест · header = "Basic %s"\r\n' "$token" > "$root/MaskTestFixture9K.txt"
+      - uses: beshkenadze/hushgrep@v0.1.0-alpha.4
         id: scan
         with:
           path: ${{ runner.temp }}/canary-repo
           artifact-name: hushgrep-smoke-report
       - name: Verify HTML and JSON masking
+        shell: bash
         env:
           REPORT_DIR: ${{ steps.scan.outputs.report-directory }}
-        run: python3 -I .github/tests/smoke.py check
+          FINDINGS: ${{ steps.scan.outputs.findings }}
+        run: |
+          jq -e --argjson findings "$FINDINGS" '
+            .version == "0.1.0-alpha.4" and
+            .status == "complete" and .scanned_files == 3 and .finding_count == $findings and
+            all(.findings[]; .path == "[REDACTED PATH]" and .value == "[REDACTED]") and
+            ([.findings[] | select(.line == 2 and .end_line == 2) | .file_id] | unique) == [0,1,2] and
+            any(.findings[]; .file_id == 0 and .line == 2 and .column == 34 and .end_column == 51)
+          ' "$REPORT_DIR/report.json"
+          token="$(printf 'fixture:MaskTestFixture9K' | base64 -w0)"
+          for secret in MaskTestFixture7Q MaskTestFixture8P MaskTestFixture9K '%4D%61%73%6B' "$token"; do
+            if grep -Fq -- "$secret" "$REPORT_DIR/report.json" "$REPORT_DIR/report.html" "$REPORT_DIR/summary.md"; then
+              echo 'A fixture value escaped masking.'
+              exit 1
+            fi
+          done
+          grep -Fq '[REDACTED]' "$REPORT_DIR/report.html"
+          jq -e '.peak_rss_kib > 0 and .wall_seconds > 0' "$REPORT_DIR/metrics.json"

@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     fs::File,
-    io::{self, Write},
+    io,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -18,6 +18,7 @@ macro_rules! re {
 }
 type Span = (usize, usize);
 mod model;
+mod report;
 mod rules;
 mod source;
 mod truffle;
@@ -150,6 +151,7 @@ fn run() -> Result<i32> {
     let started = Instant::now();
     let mut root = None;
     let mut output = None;
+    let mut report_dir = None;
     let mut timings = false;
     let mut args = env::args_os().skip(1);
     while let Some(arg) = args.next() {
@@ -160,12 +162,15 @@ fn run() -> Result<i32> {
             }
             Some("--help" | "-h") => {
                 println!(
-                    "hushgrep [--output NEW_REPORT.json] [--timings] REPOSITORY\nScan a local Git working tree on CPU. By default masked JSON goes to stdout."
+                    "hushgrep [--output NEW_REPORT.json | --report-dir NEW_DIRECTORY] [--timings] REPOSITORY\nScan a local Git working tree on CPU. By default masked JSON goes to stdout.\n--report-dir writes JSON, HTML, measurements and a Markdown summary to a new directory, and prints the finding count."
                 );
                 return Ok(0);
             }
             Some("--output") if output.is_none() => {
                 output = Some(PathBuf::from(args.next().context("output filename")?));
+            }
+            Some("--report-dir") if report_dir.is_none() => {
+                report_dir = Some(PathBuf::from(args.next().context("report directory")?));
             }
             Some("--timings") => timings = true,
             _ => {
@@ -178,27 +183,25 @@ fn run() -> Result<i32> {
         }
     }
     let root = root.context("repository")?.canonicalize()?;
-    if let Some(p) = &output {
+    ensure!(
+        output.is_none() || report_dir.is_none(),
+        "choose one output mode"
+    );
+    if let Some(p) = output.as_ref().or(report_dir.as_ref()) {
         ensure!(p.symlink_metadata().is_err(), "output exists");
     }
     let exe = env::current_exe()?;
     let base = exe.parent().context("bundle directory")?;
     let (report, load) = scan(&root, base)?;
-    let write = |out: &mut dyn Write| -> Result<()> {
-        serde_json::to_writer_pretty(&mut *out, &report)?;
-        out.write_all(b"\n")?;
-        Ok(())
-    };
-    if let Some(p) = output {
-        let parent = p
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-        write(tmp.as_file_mut())?;
+    if let Some(p) = report_dir {
+        report::write_bundle(&p, &report, started.elapsed().as_secs_f64(), load)?;
+        println!("{}", report.finding_count);
+    } else if let Some(p) = output {
+        let mut tmp = tempfile::NamedTempFile::new_in(report::parent(&p))?;
+        report::write_json(tmp.as_file_mut(), &report)?;
         tmp.persist_noclobber(p)?;
     } else {
-        write(&mut io::stdout().lock())?;
+        report::write_json(io::stdout().lock(), &report)?;
     }
     if timings {
         eprintln!(
@@ -211,6 +214,11 @@ fn run() -> Result<i32> {
 fn main() {
     // Paths and third-party errors can contain credentials. Keep diagnostics fixed.
     std::panic::set_hook(Box::new(|_| eprintln!("Internal scan error.")));
-    let code=run().unwrap_or_else(|_|{eprintln!("Scan failed. Check the Git root, bundle assets, and output filename. Use --help for usage.");1});
+    let code = run().unwrap_or_else(|_| {
+        eprintln!(
+            "Scan failed. Check the Git root, bundle assets, and output path. Use --help for usage."
+        );
+        1
+    });
     std::process::exit(code)
 }

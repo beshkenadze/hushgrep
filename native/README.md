@@ -3,10 +3,10 @@
 Extract the Linux x86-64 archive and run the executable against the root of a Git working tree.
 
 ~~~sh
-./hushgrep /path/to/repository --output findings.json
+./hushgrep /path/to/repository --report-dir hushgrep-report
 ~~~
 
-The JSON report lists one-based Unicode line and column coordinates, with exclusive end columns. Every value is replaced with `[REDACTED]`. Paths containing a detected value or a decoded URI/Basic password are masked across the report. The numeric file ID is the zero-based position among eligible paths in Git byte order. Omit `--output` to write to stdout. Output files are created privately and must be new. Exit codes are 0 for a complete scan, 2 for partial TruffleHog coverage, and 1 for a scan or invocation error. With `--timings`, stderr contains numeric scan and model initialization times.
+The JSON report lists one-based Unicode line and column coordinates, with exclusive end columns. Every value is replaced with `[REDACTED]`. Paths containing a detected value or a decoded URI/Basic password are masked across the report. The numeric file ID is the zero-based position among eligible paths in Git byte order. The new directory receives `report.html`, `report.json`, `metrics.json` and `summary.md`. The command prints the finding count. Use `--output findings.json` to write a new JSON-only file or omit both output flags to print JSON to stdout. Exit codes are 0 for a complete scan, 2 for partial TruffleHog coverage, and 1 for a scan or invocation error. With `--timings`, stderr contains numeric scan and model initialization times.
 
 Keep the executable beside the bundled `model`, `bin` and `lib` directories. Git and the standard x86-64 Linux system libraries including glibc and libstdc++ are required. The bundled ONNX Runtime CPU 1.32.0 runs the v10 INT8 encoder and boundary head on four threads. TruffleHog 3.99.9 runs locally with verification and updates disabled. The Rust CLI combines the model and TruffleHog spans with URI/HTTP Basic parsing and the frozen rules. All inference runs locally. The light mode omits PPLX.
 
