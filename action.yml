@@ -1,0 +1,53 @@
+name: Hushgrep
+description: Scan a local Git checkout for hard-coded credentials and publish a masked report.
+author: Hushgrep
+branding:
+  icon: shield
+  color: blue
+inputs:
+  path:
+    description: Git working-tree root, relative to the workspace or absolute.
+    default: .
+  artifact-name:
+    description: Unique name for the report artifact in this run.
+    default: hushgrep-report
+outputs:
+  findings:
+    description: Number of candidate ranges reported by the scanner.
+    value: ${{ steps.scan.outputs.findings }}
+  report-directory:
+    description: Runner-local directory containing report.html, report.json and metrics.json.
+    value: ${{ steps.scan.outputs.directory }}
+  artifact-url:
+    description: GitHub Actions URL of the downloadable report.
+    value: ${{ steps.upload.outputs.artifact-url }}
+runs:
+  using: composite
+  steps:
+    - name: Install verified CPU scanner
+      id: install
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/action/install.sh"
+    - name: Scan checkout
+      id: scan
+      shell: bash
+      env:
+        SCANNER: ${{ steps.install.outputs.binary }}
+        CHECKOUT: ${{ inputs.path }}
+      run: bash "$GITHUB_ACTION_PATH/action/scan.sh"
+    - name: Upload masked reports
+      id: upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.scan.outputs.directory }}/
+        if-no-files-found: error
+        retention-days: 7
+    - name: Publish scan summary
+      shell: bash
+      env:
+        REPORT_DIR: ${{ steps.scan.outputs.directory }}
+        ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+      run: |
+        python3 -I "$GITHUB_ACTION_PATH/action/report.py" summary "$REPORT_DIR" >> "$GITHUB_STEP_SUMMARY"
+        test "${{ steps.scan.outputs.status }}" = complete

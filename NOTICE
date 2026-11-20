@@ -1,0 +1,15 @@
+Hushgrep v0.1.0-alpha.3
+
+Original Rust scanner code, the GitHub Action, and the v10 fine-tuning
+contributions are licensed under Apache-2.0.
+
+The v10 checkpoint modifies Fastino GLiNER2.5 multi-v1 (Apache-2.0),
+which uses Microsoft's mDeBERTa-v3-base (MIT). The Rust splitter and
+span decoder adapt routines from Fastino GLiNER2 (Apache-2.0).
+Fine-tuning used synthetic and labelled examples, including examples
+derived from CredData. This distribution includes the inference checkpoint.
+
+The Linux bundle includes ONNX Runtime 1.32.0 (MIT) and the unmodified
+TruffleHog 3.99.9 executable (AGPL-3.0). Each component retains its
+license. See the licenses directory in the bundle and the source links
+in the release notes.

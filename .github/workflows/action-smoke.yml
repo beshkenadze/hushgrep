@@ -1,0 +1,24 @@
+name: Public action smoke test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create synthetic test fixtures
+        run: python3 -I .github/tests/smoke.py prepare
+      - uses: beshkenadze/hushgrep@v0.1.0-alpha.3
+        id: scan
+        with:
+          path: ${{ runner.temp }}/canary-repo
+          artifact-name: hushgrep-smoke-report
+      - name: Verify HTML and JSON masking
+        env:
+          REPORT_DIR: ${{ steps.scan.outputs.report-directory }}
+        run: python3 -I .github/tests/smoke.py check
