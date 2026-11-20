@@ -46,7 +46,42 @@ Use `--output findings.json` for a JSON-only file or omit both output flags to p
 
 The scanner reads tracked and non-ignored untracked files from the current working tree. It skips history, submodule contents, ignored untracked files, symlinks, non-UTF-8 files, files over 1 MiB and files with lines longer than 4,096 characters. Reports count skipped files. File paths containing detected secret values are also masked.
 
-The CPU pipeline combines v10 INT8, TruffleHog 3.99.9, and URI and HTTP Basic parsing. On 12 held-out authentication and parsing test files with 111 labelled password occurrences, the hosted pipeline found 84 and produced 22 false alerts. On the same corpus the combined TruffleHog, Betterleaks and Prowl baseline found 73 with 8 false alerts. Hushgrep found 20 occurrences missed by that baseline. Exact finding ranges varied between the two tested CPU environments. [Report format and native build instructions](native/README.md)
+The CPU pipeline combines v10 INT8, TruffleHog 3.99.9, and URI and HTTP Basic parsing. [Report format and native build instructions](native/README.md)
+
+## Password benchmark
+
+The corpus contains 12 complete authentication and parsing test files from 12 held-out projects. We scored 111 labelled password occurrences across 1,806 lines. An occurrence counts as found when a scanner range overlaps its label. Repeated values at different locations count separately. A distinct range counts as a false alert when it overlaps neither a labelled password nor another labelled credential.
+
+| Scanner | Passwords found | Missed | False alerts | Scan time |
+| --- | ---: | ---: | ---: | ---: |
+| TruffleHog 3.99.9 | 32 | 79 | 4 | 1.39 s |
+| Betterleaks 1.10.1 | 38 | 73 | 0 | 0.36 s |
+| Prowl 1.5.0 (ML disabled) | 53 | 58 | 4 | 0.08 s |
+| **Union of the three standalone scanners** | **73** | **38** | **8** | **1.83 s** |
+| **Hushgrep v10 INT8 pipeline** | **84** | **27** | **22** | **359.74 s** |
+| Union of all results | 93 | 18 | 26 | |
+
+Hushgrep added 20 password occurrences in seven projects and 18 false alerts to the union of the three scanners. The three scanners found nine password occurrences the Hushgrep pipeline missed. Results are from GitHub-hosted Ubuntu 24.04 runners with two logical CPUs, using the frozen detector pipeline before the Action's report renderer moved to Rust. Peak RSS was 202 MiB for the sequential baseline and 1.32 GiB for Hushgrep. Times cover startup and scanning. Exact Hushgrep ranges varied across the two CPU environments tested. The selected files measure password detection in these fixtures.
+
+### Run the three standalone scanners
+
+Put [TruffleHog 3.99.9](https://github.com/trufflesecurity/trufflehog/releases/tag/v3.99.9), [Betterleaks 1.10.1](https://github.com/betterleaks/betterleaks/releases/tag/v1.10.1), [Prowl 1.5.0](https://github.com/Lercas/prowl/releases/tag/v1.5.0) and `jq` on your PATH. Run from Bash with the scanners' default configuration. These commands scan the directory offline and print per-scanner counts.
+
+~~~bash
+set -o pipefail
+repo=/path/to/checkout
+
+trufflehog filesystem "$repo" --concurrency 1 --no-verification --no-update --fail-on-scan-errors --json |
+  jq -cn 'reduce inputs as $hit (0; . + 1) | {trufflehog: .}'
+
+betterleaks dir "$repo" --redact=100 --no-color --no-banner --exit-code 0 --report-format json --report-path - |
+  jq -c '{betterleaks: length}'
+
+prowl scan "$repo" --format json --no-color --no-dedupe |
+  jq -c '{prowl: .count, complete, truncated}'
+~~~
+
+These are counts before cross-scanner deduplication. The benchmark union merges identical source ranges, then scores the merged list against the same labels.
 
 ## Licenses
 
